@@ -1,29 +1,17 @@
 #!/usr/bin/env python3
 
-#--------------------------------------------------------------------------#
-# @author Dimitri Kirchner @Tibap
-# @brief Check GKE clusters against the Sys:All loophole / misconfiguration
-# How-to use:
-# 1/ Authenticate to GCP: gcloud auth application-default login
-# 2/ Create virtualenv: python3 -m venv .venv
-# 3/ Activate virtual env: source .venv/bin/activate
-# 4/ Install requirements: pip install -r requirements.txt
-# 5/ Run script: python3 sys-all-checker.py
-#
-# Required roles: roles/container.clusterViewer at the organization level 
-#--------------------------------------------------------------------------#
-
 import google.auth
 from google.cloud import resource_manager
 from google.cloud.container_v1 import ClusterManagerClient
 from kubernetes import client as kubClient
 import urllib3
+import csv
 import logging
 
 if __name__ == '__main__':
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger('sys-all-checker')
 
     logger.info("Authenticating to GCP")
     credentials, project_id = google.auth.default()
@@ -33,7 +21,8 @@ if __name__ == '__main__':
 
     NB_CLUSTERS = 0
     NB_PROJECTS = 0
-    dangerous_bindings = []
+    dangerous_bindings = [['Project Id', 'Cluster Name', '(Cluster) Role Binding', 'Cluster Role', 'Subject Name']]
+    
     logger.debug("Instanciating resource_manager client")
     client = resource_manager.Client()
     logger.debug("Instanciating ClusterManagerClient")
@@ -93,12 +82,13 @@ if __name__ == '__main__':
                                 for subject in binding.subjects:
                                     if subject.name in dangerous_groups:
                                         if binding.metadata.name not in normal_cluster_roles:
-                                            logger.debug(f"!! ClusterRole {binding.metadata.name} is bound to: {subject.name}")
-                                            dangerous_bindings.append(
+                                            logger.info(f"!! ClusterRoleBinding '{binding.metadata.name}' binds ClusterRole '{binding.role_ref.name}' to '{subject.name}'")
+                                            dangerous_bindings.append([
                                                 project.project_id,
                                                 cluster.name,
                                                 binding.metadata.name,
-                                                subject.name
+                                                binding.role_ref.name,
+                                                subject.name]
                                             )
 
                     # Check Role bindings
@@ -108,19 +98,23 @@ if __name__ == '__main__':
                             if roleBinding.subjects:
                                 for subject in roleBinding.subjects:
                                     if subject.name in dangerous_groups:
-                                        logger.debug(f"!! Role {roleBinding.metadata.name} is bound to: {subject.name}")
-                                        dangerous_bindings.append(
+                                        logger.info(f"!! RoleBinding '{roleBinding.metadata.name}' binds Role '{roleBinding.role_ref.name}' to '{subject.name}'")
+                                        dangerous_bindings.append([
                                             project.project_id,
                                             cluster.name,
                                             roleBinding.metadata.name,
-                                            subject.name
+                                            roleBinding.role_ref.name,
+                                            subject.name]
                                         )
 
             except KeyError:
                 pass
 
     logger.info(f"Scanned {NB_PROJECTS} projects with a total of {NB_CLUSTERS} clusters")
-    logger.info(f"Found {len(dangerous_bindings)} dangerous bindings")
-    if len(dangerous_bindings) > 0:
-        for result in dangerous_bindings:
-            logger.info(result)
+    logger.info(f"Found {len(dangerous_bindings)-1} dangerous bindings")
+    if len(dangerous_bindings) > 1:
+        filename='output.csv'
+        logger.info(f"Check file '{filename}' for results exported as CSV")
+        with open(filename, 'w', newline='') as f:
+            wr = csv.writer(f, quoting=csv.QUOTE_NONE)
+            wr.writerows(dangerous_bindings)
